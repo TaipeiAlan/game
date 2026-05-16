@@ -136,6 +136,74 @@
     .side { flex-direction: row; min-width: 0; width: 100%; }
     .panel { flex: 1; }
   }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(5,7,15,0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 16px;
+  }
+  .modal.hidden { display: none; }
+  .modal-card {
+    background: #14182b;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 22px 20px;
+    width: 100%;
+    max-width: 380px;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.6);
+  }
+  .modal-card h3 {
+    font-size: 1.1rem;
+    margin-bottom: 8px;
+    background: linear-gradient(90deg, #7df9ff, #b388ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .modal-note {
+    color: #aab3d1;
+    font-size: 0.82rem;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+  .bind-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .bind-label { font-weight: 600; }
+  .bind-current {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 0.85rem;
+    color: #d3c2ff;
+    background: rgba(179,136,255,0.12);
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(179,136,255,0.25);
+    min-width: 56px;
+    text-align: center;
+  }
+  .bind-btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+  .bind-btn.listening {
+    background: rgba(255,128,171,0.25);
+    border-color: rgba(255,128,171,0.6);
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .modal-actions button { flex: 1; padding: 10px; }
 </style>
 </head>
 <body>
@@ -175,12 +243,35 @@
     <button id="btnDrop" class="full primary">⤓ 一鍵落下 (連按兩下 ↓)</button>
     <button id="btnPause" class="half">⏸ 暫停</button>
     <button id="btnReset" class="half">↻ 重新開始</button>
+    <button id="btnSettings" class="full">⚙ 自定義按鍵</button>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>自定義按鍵</h3>
+      <p class="modal-note">自訂的按鍵會加在原本的預設按鍵之上，不會取代原本的鍵。</p>
+      <div class="bind-row">
+        <span class="bind-label">⟳ 旋轉</span>
+        <span class="bind-current" id="curRotate">未設定</span>
+        <button class="bind-btn" data-action="rotate">點此設定</button>
+      </div>
+      <div class="bind-row">
+        <span class="bind-label">⤓ 一鍵落下</span>
+        <span class="bind-current" id="curHardDrop">未設定</span>
+        <button class="bind-btn" data-action="hardDrop">點此設定</button>
+      </div>
+      <div class="modal-actions">
+        <button id="clearBindings">清除自訂</button>
+        <button id="closeSettings" class="primary">完成</button>
+      </div>
+    </div>
   </div>
 
   <p class="hint">
     鍵盤：<kbd>←</kbd>/<kbd>A</kbd> <kbd>→</kbd>/<kbd>D</kbd> 左右移動，
     <kbd>↓</kbd>/<kbd>S</kbd> 加速下落（連按兩下直接落下），
     <kbd>↑</kbd>/<kbd>W</kbd>/<kbd>X</kbd>/<kbd>Space</kbd> 旋轉，<kbd>P</kbd> 暫停。
+    暫停中按任意按鈕即可繼續。
   </p>
 
 <script>
@@ -210,6 +301,54 @@
   };
 
   let grid, current, nextPiece, score, level, lines, dropInterval, dropTimer, lastTime, paused, gameOver;
+  let flashes = [];
+  const FLASH_DURATION = 220;
+  const STORAGE_KEY = 'tetris.save.v1';
+  const BINDINGS_KEY = 'tetris.bindings.v1';
+
+  let bindings = { rotate: null, hardDrop: null };
+  let listeningFor = null;
+
+  function loadBindings() {
+    try {
+      const raw = localStorage.getItem(BINDINGS_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        bindings.rotate = typeof data.rotate === 'string' ? data.rotate : null;
+        bindings.hardDrop = typeof data.hardDrop === 'string' ? data.hardDrop : null;
+      }
+    } catch (e) {}
+  }
+
+  function saveBindings() {
+    try { localStorage.setItem(BINDINGS_KEY, JSON.stringify(bindings)); } catch (e) {}
+  }
+
+  function formatKeyCode(code) {
+    if (!code) return '未設定';
+    if (code.startsWith('Key')) return code.slice(3);
+    if (code.startsWith('Digit')) return code.slice(5);
+    if (code === 'Space') return 'Space';
+    if (code === 'ArrowUp') return '↑';
+    if (code === 'ArrowDown') return '↓';
+    if (code === 'ArrowLeft') return '←';
+    if (code === 'ArrowRight') return '→';
+    if (code === 'Enter') return 'Enter';
+    if (code === 'Escape') return 'Esc';
+    if (code === 'Tab') return 'Tab';
+    if (code === 'Backspace') return 'Bksp';
+    if (code.startsWith('Shift')) return 'Shift';
+    if (code.startsWith('Control')) return 'Ctrl';
+    if (code.startsWith('Alt')) return 'Alt';
+    if (code.startsWith('Meta')) return 'Meta';
+    return code;
+  }
+
+  function refreshBindingUI() {
+    document.getElementById('curRotate').textContent = formatKeyCode(bindings.rotate);
+    document.getElementById('curHardDrop').textContent = formatKeyCode(bindings.hardDrop);
+  }
 
   function makeGrid() {
     return Array.from({length: ROWS}, () => Array(COLS).fill(null));
@@ -263,26 +402,30 @@
   }
 
   function clearLines() {
-    let cleared = 0;
+    const clearedYs = [];
     for (let y = ROWS - 1; y >= 0; y--) {
-      if (grid[y].every(c => c)) {
-        grid.splice(y, 1);
-        grid.unshift(Array(COLS).fill(null));
-        cleared++;
-        y++;
-      }
+      if (grid[y].every(c => c)) clearedYs.push(y);
     }
-    if (cleared > 0) {
-      const points = [0, 100, 300, 500, 800][cleared] * level;
-      score += points;
-      lines += cleared;
-      const newLevel = Math.floor(lines / 10) + 1;
-      if (newLevel !== level) {
-        level = newLevel;
-        dropInterval = Math.max(80, 1000 - (level - 1) * 80);
-      }
-      updateUI();
+    if (clearedYs.length === 0) return;
+
+    flashes.push({ rows: clearedYs.slice(), start: performance.now() });
+
+    clearedYs.sort((a, b) => a - b);
+    for (let i = clearedYs.length - 1; i >= 0; i--) {
+      grid.splice(clearedYs[i], 1);
+      grid.unshift(Array(COLS).fill(null));
     }
+
+    const cleared = clearedYs.length;
+    const points = [0, 100, 300, 500, 800][cleared] * level;
+    score += points;
+    lines += cleared;
+    const newLevel = Math.floor(lines / 10) + 1;
+    if (newLevel !== level) {
+      level = newLevel;
+      dropInterval = Math.max(80, 1000 - (level - 1) * 80);
+    }
+    updateUI();
   }
 
   function spawn() {
@@ -292,16 +435,29 @@
       gameOver = true;
     }
     drawNext();
+    saveState();
+  }
+
+  function wakeIfPaused() {
+    if (paused && !gameOver) {
+      paused = false;
+      lastDownPress = 0;
+      draw();
+      return true;
+    }
+    return false;
   }
 
   function move(dx) {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     if (!collides(current, dx, 0)) current.x += dx;
     draw();
   }
 
   function softDrop() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     if (!collides(current, 0, 1)) {
       current.y += 1;
       score += 1;
@@ -313,7 +469,8 @@
   }
 
   function hardDrop() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     let dist = 0;
     while (!collides(current, 0, 1)) { current.y += 1; dist++; }
     score += dist * 2;
@@ -323,7 +480,8 @@
   }
 
   function rotateCurrent() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     const rotated = rotate(current.shape);
     const kicks = [0, -1, 1, -2, 2];
     for (const k of kicks) {
@@ -338,7 +496,7 @@
 
   function lockPiece() {
     merge();
-    if (gameOver) { draw(); showGameOver(); return; }
+    if (gameOver) { saveState(); draw(); showGameOver(); return; }
     clearLines();
     spawn();
     if (gameOver) { draw(); showGameOver(); return; }
@@ -407,7 +565,27 @@
       }
     }
 
-    if (paused && !gameOver) overlay('已暫停', '按 P 或繼續');
+    if (flashes.length > 0) {
+      const now = performance.now();
+      flashes = flashes.filter(f => {
+        const elapsed = now - f.start;
+        if (elapsed >= FLASH_DURATION) return false;
+        const t = elapsed / FLASH_DURATION;
+        const alpha = 1 - t;
+        const shrink = t * CELL * 0.5;
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        for (const y of f.rows) {
+          ctx.fillRect(0, y * CELL + shrink, board.width, CELL - shrink * 2);
+        }
+        ctx.fillStyle = `rgba(125, 249, 255, ${alpha * 0.6})`;
+        for (const y of f.rows) {
+          ctx.fillRect(0, y * CELL + shrink + 2, board.width, Math.max(0, CELL - shrink * 2 - 4));
+        }
+        return true;
+      });
+    }
+
+    if (paused && !gameOver) overlay('已暫停', '按任意按鈕繼續');
     if (gameOver) overlay('遊戲結束', '點擊重新開始');
   }
 
@@ -464,7 +642,43 @@
     linesEl.textContent = lines;
   }
 
-  function reset() {
+  function saveState() {
+    try {
+      const data = {
+        grid, score, level, lines, dropInterval, gameOver,
+        current: current && { type: current.type, shape: current.shape, x: current.x, y: current.y },
+        nextPiece: nextPiece && { type: nextPiece.type, shape: nextPiece.shape, x: nextPiece.x, y: nextPiece.y }
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data.grid) || data.grid.length !== ROWS) return false;
+      grid = data.grid;
+      score = data.score | 0;
+      level = data.level || 1;
+      lines = data.lines | 0;
+      dropInterval = data.dropInterval || 1000;
+      gameOver = !!data.gameOver;
+      current = data.current || null;
+      nextPiece = data.nextPiece || null;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function clearSave() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  }
+
+  function newGame() {
+    clearSave();
     grid = makeGrid();
     score = 0; level = 1; lines = 0;
     dropInterval = 1000;
@@ -473,14 +687,33 @@
     paused = false;
     gameOver = false;
     nextPiece = null;
+    flashes = [];
     spawn();
     updateUI();
     draw();
   }
 
+  function init() {
+    dropTimer = 0;
+    lastTime = 0;
+    flashes = [];
+    if (loadState() && current) {
+      paused = !gameOver;
+      if (!nextPiece) nextPiece = randomPiece();
+      drawNext();
+      updateUI();
+      draw();
+    } else {
+      newGame();
+    }
+  }
+
+  const reset = newGame;
+
   function loop(time = 0) {
     const dt = time - lastTime;
     lastTime = time;
+    let needsDraw = flashes.length > 0;
     if (!paused && !gameOver) {
       dropTimer += dt;
       if (dropTimer >= dropInterval) {
@@ -490,9 +723,10 @@
         } else {
           lockPiece();
         }
-        draw();
+        needsDraw = true;
       }
     }
+    if (needsDraw) draw();
     requestAnimationFrame(loop);
   }
 
@@ -500,8 +734,31 @@
   const DOUBLE_DOWN_MS = 280;
 
   document.addEventListener('keydown', (e) => {
+    if (listeningFor) {
+      e.preventDefault();
+      if (e.key === 'Escape') {
+        stopBindingCapture();
+        return;
+      }
+      if (e.code === 'Tab') return;
+      bindings[listeningFor] = e.code;
+      saveBindings();
+      stopBindingCapture();
+      refreshBindingUI();
+      return;
+    }
     if (gameOver) {
       if (e.key === 'Enter' || e.key === ' ') reset();
+      return;
+    }
+    if (bindings.hardDrop && e.code === bindings.hardDrop) {
+      hardDrop();
+      e.preventDefault();
+      return;
+    }
+    if (bindings.rotate && e.code === bindings.rotate) {
+      rotateCurrent();
+      e.preventDefault();
       return;
     }
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -569,7 +826,59 @@
 
   board.addEventListener('click', () => { if (gameOver) reset(); });
 
-  reset();
+  const settingsModal = document.getElementById('settingsModal');
+  const bindButtons = document.querySelectorAll('.bind-btn');
+
+  function startBindingCapture(action, btn) {
+    listeningFor = action;
+    bindButtons.forEach(b => b.classList.toggle('listening', b === btn));
+    btn.textContent = '請按一個鍵... (Esc 取消)';
+  }
+  function stopBindingCapture() {
+    listeningFor = null;
+    bindButtons.forEach(b => {
+      b.classList.remove('listening');
+      b.textContent = '點此設定';
+    });
+  }
+
+  bindButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (listeningFor) { stopBindingCapture(); return; }
+      startBindingCapture(btn.dataset.action, btn);
+    });
+  });
+
+  document.getElementById('btnSettings').addEventListener('click', () => {
+    refreshBindingUI();
+    settingsModal.classList.remove('hidden');
+  });
+  document.getElementById('closeSettings').addEventListener('click', () => {
+    stopBindingCapture();
+    settingsModal.classList.add('hidden');
+  });
+  document.getElementById('clearBindings').addEventListener('click', () => {
+    bindings = { rotate: null, hardDrop: null };
+    saveBindings();
+    refreshBindingUI();
+  });
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) {
+      stopBindingCapture();
+      settingsModal.classList.add('hidden');
+    }
+  });
+
+  loadBindings();
+  refreshBindingUI();
+
+  window.addEventListener('beforeunload', saveState);
+  window.addEventListener('pagehide', saveState);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveState();
+  });
+
+  init();
   requestAnimationFrame(loop);
 })();
 </script>
