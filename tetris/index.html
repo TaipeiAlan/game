@@ -213,6 +213,7 @@
   let grid, current, nextPiece, score, level, lines, dropInterval, dropTimer, lastTime, paused, gameOver;
   let flashes = [];
   const FLASH_DURATION = 220;
+  const STORAGE_KEY = 'tetris.save.v1';
 
   function makeGrid() {
     return Array.from({length: ROWS}, () => Array(COLS).fill(null));
@@ -315,6 +316,7 @@
     if (gameOver) return;
     if (wakeIfPaused()) return;
     if (!collides(current, dx, 0)) current.x += dx;
+    saveState();
     draw();
   }
 
@@ -328,6 +330,7 @@
     } else {
       lockPiece();
     }
+    saveState();
     draw();
   }
 
@@ -339,6 +342,7 @@
     score += dist * 2;
     updateUI();
     lockPiece();
+    saveState();
     draw();
   }
 
@@ -354,14 +358,16 @@
         break;
       }
     }
+    saveState();
     draw();
   }
 
   function lockPiece() {
     merge();
-    if (gameOver) { draw(); showGameOver(); return; }
+    if (gameOver) { saveState(); draw(); showGameOver(); return; }
     clearLines();
     spawn();
+    saveState();
     if (gameOver) { draw(); showGameOver(); return; }
   }
 
@@ -505,7 +511,43 @@
     linesEl.textContent = lines;
   }
 
-  function reset() {
+  function saveState() {
+    try {
+      const data = {
+        grid, score, level, lines, dropInterval, gameOver,
+        current: current && { type: current.type, shape: current.shape, x: current.x, y: current.y },
+        nextPiece: nextPiece && { type: nextPiece.type, shape: nextPiece.shape, x: nextPiece.x, y: nextPiece.y }
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data.grid) || data.grid.length !== ROWS) return false;
+      grid = data.grid;
+      score = data.score | 0;
+      level = data.level || 1;
+      lines = data.lines | 0;
+      dropInterval = data.dropInterval || 1000;
+      gameOver = !!data.gameOver;
+      current = data.current || null;
+      nextPiece = data.nextPiece || null;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function clearSave() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  }
+
+  function newGame() {
+    clearSave();
     grid = makeGrid();
     score = 0; level = 1; lines = 0;
     dropInterval = 1000;
@@ -517,8 +559,26 @@
     flashes = [];
     spawn();
     updateUI();
+    saveState();
     draw();
   }
+
+  function init() {
+    dropTimer = 0;
+    lastTime = 0;
+    flashes = [];
+    if (loadState() && current) {
+      paused = !gameOver;
+      if (!nextPiece) nextPiece = randomPiece();
+      drawNext();
+      updateUI();
+      draw();
+    } else {
+      newGame();
+    }
+  }
+
+  const reset = newGame;
 
   function loop(time = 0) {
     const dt = time - lastTime;
@@ -533,6 +593,7 @@
         } else {
           lockPiece();
         }
+        saveState();
         needsDraw = true;
       }
     }
@@ -613,7 +674,13 @@
 
   board.addEventListener('click', () => { if (gameOver) reset(); });
 
-  reset();
+  window.addEventListener('beforeunload', saveState);
+  window.addEventListener('pagehide', saveState);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveState();
+  });
+
+  init();
   requestAnimationFrame(loop);
 })();
 </script>
