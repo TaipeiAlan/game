@@ -172,14 +172,14 @@
     <button id="btnLeft">← 左移</button>
     <button id="btnDown">↓ 下移</button>
     <button id="btnRight">→ 右移</button>
-    <button id="btnDrop" class="full primary">⤓ 一鍵落下 (Space)</button>
+    <button id="btnDrop" class="full primary">⤓ 一鍵落下 (連按兩下 ↓)</button>
     <button id="btnPause" class="half">⏸ 暫停</button>
     <button id="btnReset" class="half">↻ 重新開始</button>
   </div>
 
   <p class="hint">
-    鍵盤：<kbd>←</kbd> <kbd>→</kbd> 左右移動，<kbd>↓</kbd> 加速下落，
-    <kbd>↑</kbd>/<kbd>X</kbd> 旋轉，<kbd>Space</kbd> 直接落下，<kbd>P</kbd> 暫停。
+    鍵盤：<kbd>←</kbd> <kbd>→</kbd> 左右移動，<kbd>↓</kbd> 加速下落（連按兩下直接落下），
+    <kbd>↑</kbd>/<kbd>X</kbd>/<kbd>Space</kbd> 旋轉，<kbd>P</kbd> 暫停。
   </p>
 
 <script>
@@ -495,6 +495,9 @@
     requestAnimationFrame(loop);
   }
 
+  let lastDownPress = 0;
+  const DOUBLE_DOWN_MS = 280;
+
   document.addEventListener('keydown', (e) => {
     if (gameOver) {
       if (e.key === 'Enter' || e.key === ' ') reset();
@@ -503,11 +506,22 @@
     switch (e.key) {
       case 'ArrowLeft': move(-1); e.preventDefault(); break;
       case 'ArrowRight': move(1); e.preventDefault(); break;
-      case 'ArrowDown': softDrop(); e.preventDefault(); break;
+      case 'ArrowDown': {
+        e.preventDefault();
+        const now = performance.now();
+        if (!e.repeat && now - lastDownPress < DOUBLE_DOWN_MS) {
+          lastDownPress = 0;
+          hardDrop();
+        } else {
+          if (!e.repeat) lastDownPress = now;
+          softDrop();
+        }
+        break;
+      }
       case 'ArrowUp':
       case 'x':
-      case 'X': rotateCurrent(); e.preventDefault(); break;
-      case ' ': hardDrop(); e.preventDefault(); break;
+      case 'X':
+      case ' ': rotateCurrent(); e.preventDefault(); break;
       case 'p':
       case 'P': togglePause(); break;
     }
