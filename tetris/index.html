@@ -136,6 +136,74 @@
     .side { flex-direction: row; min-width: 0; width: 100%; }
     .panel { flex: 1; }
   }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(5,7,15,0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 16px;
+  }
+  .modal.hidden { display: none; }
+  .modal-card {
+    background: #14182b;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 22px 20px;
+    width: 100%;
+    max-width: 380px;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.6);
+  }
+  .modal-card h3 {
+    font-size: 1.1rem;
+    margin-bottom: 8px;
+    background: linear-gradient(90deg, #7df9ff, #b388ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .modal-note {
+    color: #aab3d1;
+    font-size: 0.82rem;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+  .bind-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .bind-label { font-weight: 600; }
+  .bind-current {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 0.85rem;
+    color: #d3c2ff;
+    background: rgba(179,136,255,0.12);
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(179,136,255,0.25);
+    min-width: 56px;
+    text-align: center;
+  }
+  .bind-btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+  .bind-btn.listening {
+    background: rgba(255,128,171,0.25);
+    border-color: rgba(255,128,171,0.6);
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+  }
+  .modal-actions button { flex: 1; padding: 10px; }
 </style>
 </head>
 <body>
@@ -175,6 +243,28 @@
     <button id="btnDrop" class="full primary">⤓ 一鍵落下 (連按兩下 ↓)</button>
     <button id="btnPause" class="half">⏸ 暫停</button>
     <button id="btnReset" class="half">↻ 重新開始</button>
+    <button id="btnSettings" class="full">⚙ 自定義按鍵</button>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>自定義按鍵</h3>
+      <p class="modal-note">自訂的按鍵會加在原本的預設按鍵之上，不會取代原本的鍵。</p>
+      <div class="bind-row">
+        <span class="bind-label">⟳ 旋轉</span>
+        <span class="bind-current" id="curRotate">未設定</span>
+        <button class="bind-btn" data-action="rotate">點此設定</button>
+      </div>
+      <div class="bind-row">
+        <span class="bind-label">⤓ 一鍵落下</span>
+        <span class="bind-current" id="curHardDrop">未設定</span>
+        <button class="bind-btn" data-action="hardDrop">點此設定</button>
+      </div>
+      <div class="modal-actions">
+        <button id="clearBindings">清除自訂</button>
+        <button id="closeSettings" class="primary">完成</button>
+      </div>
+    </div>
   </div>
 
   <p class="hint">
@@ -214,6 +304,51 @@
   let flashes = [];
   const FLASH_DURATION = 220;
   const STORAGE_KEY = 'tetris.save.v1';
+  const BINDINGS_KEY = 'tetris.bindings.v1';
+
+  let bindings = { rotate: null, hardDrop: null };
+  let listeningFor = null;
+
+  function loadBindings() {
+    try {
+      const raw = localStorage.getItem(BINDINGS_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        bindings.rotate = typeof data.rotate === 'string' ? data.rotate : null;
+        bindings.hardDrop = typeof data.hardDrop === 'string' ? data.hardDrop : null;
+      }
+    } catch (e) {}
+  }
+
+  function saveBindings() {
+    try { localStorage.setItem(BINDINGS_KEY, JSON.stringify(bindings)); } catch (e) {}
+  }
+
+  function formatKeyCode(code) {
+    if (!code) return '未設定';
+    if (code.startsWith('Key')) return code.slice(3);
+    if (code.startsWith('Digit')) return code.slice(5);
+    if (code === 'Space') return 'Space';
+    if (code === 'ArrowUp') return '↑';
+    if (code === 'ArrowDown') return '↓';
+    if (code === 'ArrowLeft') return '←';
+    if (code === 'ArrowRight') return '→';
+    if (code === 'Enter') return 'Enter';
+    if (code === 'Escape') return 'Esc';
+    if (code === 'Tab') return 'Tab';
+    if (code === 'Backspace') return 'Bksp';
+    if (code.startsWith('Shift')) return 'Shift';
+    if (code.startsWith('Control')) return 'Ctrl';
+    if (code.startsWith('Alt')) return 'Alt';
+    if (code.startsWith('Meta')) return 'Meta';
+    return code;
+  }
+
+  function refreshBindingUI() {
+    document.getElementById('curRotate').textContent = formatKeyCode(bindings.rotate);
+    document.getElementById('curHardDrop').textContent = formatKeyCode(bindings.hardDrop);
+  }
 
   function makeGrid() {
     return Array.from({length: ROWS}, () => Array(COLS).fill(null));
@@ -300,6 +435,7 @@
       gameOver = true;
     }
     drawNext();
+    saveState();
   }
 
   function wakeIfPaused() {
@@ -316,7 +452,6 @@
     if (gameOver) return;
     if (wakeIfPaused()) return;
     if (!collides(current, dx, 0)) current.x += dx;
-    saveState();
     draw();
   }
 
@@ -330,7 +465,6 @@
     } else {
       lockPiece();
     }
-    saveState();
     draw();
   }
 
@@ -342,7 +476,6 @@
     score += dist * 2;
     updateUI();
     lockPiece();
-    saveState();
     draw();
   }
 
@@ -358,7 +491,6 @@
         break;
       }
     }
-    saveState();
     draw();
   }
 
@@ -367,7 +499,6 @@
     if (gameOver) { saveState(); draw(); showGameOver(); return; }
     clearLines();
     spawn();
-    saveState();
     if (gameOver) { draw(); showGameOver(); return; }
   }
 
@@ -559,7 +690,6 @@
     flashes = [];
     spawn();
     updateUI();
-    saveState();
     draw();
   }
 
@@ -593,7 +723,6 @@
         } else {
           lockPiece();
         }
-        saveState();
         needsDraw = true;
       }
     }
@@ -605,8 +734,31 @@
   const DOUBLE_DOWN_MS = 280;
 
   document.addEventListener('keydown', (e) => {
+    if (listeningFor) {
+      e.preventDefault();
+      if (e.key === 'Escape') {
+        stopBindingCapture();
+        return;
+      }
+      if (e.code === 'Tab') return;
+      bindings[listeningFor] = e.code;
+      saveBindings();
+      stopBindingCapture();
+      refreshBindingUI();
+      return;
+    }
     if (gameOver) {
       if (e.key === 'Enter' || e.key === ' ') reset();
+      return;
+    }
+    if (bindings.hardDrop && e.code === bindings.hardDrop) {
+      hardDrop();
+      e.preventDefault();
+      return;
+    }
+    if (bindings.rotate && e.code === bindings.rotate) {
+      rotateCurrent();
+      e.preventDefault();
       return;
     }
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -673,6 +825,52 @@
   document.getElementById('btnReset').addEventListener('click', reset);
 
   board.addEventListener('click', () => { if (gameOver) reset(); });
+
+  const settingsModal = document.getElementById('settingsModal');
+  const bindButtons = document.querySelectorAll('.bind-btn');
+
+  function startBindingCapture(action, btn) {
+    listeningFor = action;
+    bindButtons.forEach(b => b.classList.toggle('listening', b === btn));
+    btn.textContent = '請按一個鍵... (Esc 取消)';
+  }
+  function stopBindingCapture() {
+    listeningFor = null;
+    bindButtons.forEach(b => {
+      b.classList.remove('listening');
+      b.textContent = '點此設定';
+    });
+  }
+
+  bindButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (listeningFor) { stopBindingCapture(); return; }
+      startBindingCapture(btn.dataset.action, btn);
+    });
+  });
+
+  document.getElementById('btnSettings').addEventListener('click', () => {
+    refreshBindingUI();
+    settingsModal.classList.remove('hidden');
+  });
+  document.getElementById('closeSettings').addEventListener('click', () => {
+    stopBindingCapture();
+    settingsModal.classList.add('hidden');
+  });
+  document.getElementById('clearBindings').addEventListener('click', () => {
+    bindings = { rotate: null, hardDrop: null };
+    saveBindings();
+    refreshBindingUI();
+  });
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) {
+      stopBindingCapture();
+      settingsModal.classList.add('hidden');
+    }
+  });
+
+  loadBindings();
+  refreshBindingUI();
 
   window.addEventListener('beforeunload', saveState);
   window.addEventListener('pagehide', saveState);
