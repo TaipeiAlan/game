@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>魔術方塊</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC",
+                 "Microsoft JhengHei", sans-serif;
+    color: #f5f5f7;
+    background: radial-gradient(circle at 30% 20%, #1f2a4a 0%, #0b1020 60%, #05070f 100%);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  #scene { position: fixed; inset: 0; }
+  .hud {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .hud > * { pointer-events: auto; }
+  .back {
+    text-decoration: none;
+    color: #d3c2ff;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 0.9rem;
+  }
+  .back:hover { background: rgba(255, 255, 255, 0.12); }
+  .stats {
+    display: flex;
+    gap: 14px;
+    padding: 8px 14px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
+  }
+  .stats b { color: #7df9ff; font-weight: 600; }
+  .controls {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  button {
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    color: #f5f5f7;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+  button:hover { background: rgba(179, 136, 255, 0.25); }
+  button:active { transform: scale(0.97); }
+  .hint {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #c8cde5;
+    font-size: 0.85rem;
+    text-align: center;
+    max-width: 92%;
+    pointer-events: none;
+  }
+  .toast {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    padding: 20px 32px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(125, 249, 255, 0.2), rgba(179, 136, 255, 0.25));
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-size: 1.3rem;
+    font-weight: 600;
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    z-index: 20;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div class="hud">
+    <a class="back" href="../index.html">← 返回</a>
+    <div class="stats">
+      <span>步數 <b id="moves">0</b></span>
+      <span>時間 <b id="timer">00:00</b></span>
+    </div>
+    <div class="controls">
+      <button id="scramble">打亂</button>
+      <button id="reset">重置</button>
+    </div>
+  </div>
+  <div class="hint">在方塊面上拖曳旋轉一層 · 在背景拖曳旋轉視角 · 滾輪縮放</div>
+  <div class="toast" id="toast">完成！</div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const canvas = document.getElementById('scene');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(5, 5, 7);
+    camera.lookAt(0, 0, 0);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.minDistance = 5;
+    controls.maxDistance = 18;
+    controls.enablePan = false;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(5, 10, 7);
+    scene.add(dir);
+
+    // Colors (Rubik's standard)
+    const COLORS = {
+      R: 0xd62828, // +X right
+      O: 0xff8c1a, // -X left
+      U: 0xf5f5f5, // +Y up (white)
+      D: 0xffd60a, // -Y down (yellow)
+      F: 0x2ecc71, // +Z front
+      B: 0x2563eb, // -Z back
+      K: 0x111111  // inner
+    };
+
+    function makeCubieMaterials(x, y, z) {
+      // BoxGeometry face order: +X, -X, +Y, -Y, +Z, -Z
+      return [
+        new THREE.MeshBasicMaterial({ color: x === 1 ? COLORS.R : COLORS.K }),
+        new THREE.MeshBasicMaterial({ color: x === -1 ? COLORS.O : COLORS.K }),
+        new THREE.MeshBasicMaterial({ color: y === 1 ? COLORS.U : COLORS.K }),
+        new THREE.MeshBasicMaterial({ color: y === -1 ? COLORS.D : COLORS.K }),
+        new THREE.MeshBasicMaterial({ color: z === 1 ? COLORS.F : COLORS.K }),
+        new THREE.MeshBasicMaterial({ color: z === -1 ? COLORS.B : COLORS.K })
+      ];
+    }
+
+    // Rounded look: a slightly smaller colored box on top of a black base.
+    const cubeRoot = new THREE.Group();
+    scene.add(cubeRoot);
+    const cubies = [];
+
+    function buildCube() {
+      cubies.length = 0;
+      while (cubeRoot.children.length) cubeRoot.remove(cubeRoot.children[0]);
+
+      const size = 0.96;
+      const geom = new THREE.BoxGeometry(size, size, size);
+      // Subtle edges
+      const edgeGeom = new THREE.EdgesGeometry(geom);
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+
+      for (let x = -1; x <= 1; x++) {
+        for (let y = -1; y <= 1; y++) {
+          for (let z = -1; z <= 1; z++) {
+            const mats = makeCubieMaterials(x, y, z);
+            const mesh = new THREE.Mesh(geom, mats);
+            mesh.position.set(x, y, z);
+            const edges = new THREE.LineSegments(edgeGeom, edgeMat);
+            mesh.add(edges);
+            cubeRoot.add(mesh);
+            cubies.push(mesh);
+          }
+        }
+      }
+    }
+    buildCube();
+
+    // --- Slice rotation ---
+    const pivot = new THREE.Group();
+    scene.add(pivot);
+
+    function snapPositions() {
+      cubies.forEach(c => {
+        c.position.x = Math.round(c.position.x);
+        c.position.y = Math.round(c.position.y);
+        c.position.z = Math.round(c.position.z);
+        // Snap rotation to nearest PI/2 on each axis - keep matrix accurate
+        c.updateMatrix();
+      });
+    }
+
+    function selectLayer(axis, layer) {
+      return cubies.filter(c => Math.round(c.position[axis]) === layer);
+    }
+
+    function attachToPivot(group) {
+      pivot.rotation.set(0, 0, 0);
+      pivot.position.set(0, 0, 0);
+      pivot.updateMatrixWorld();
+      group.forEach(c => pivot.attach(c));
+    }
+
+    function detachFromPivot() {
+      const kids = [...pivot.children];
+      kids.forEach(c => cubeRoot.attach(c));
+      snapPositions();
+    }
+
+    let busy = false;
+    function rotateSlice(axis, layer, dir, duration = 220) {
+      return new Promise(resolve => {
+        if (busy) return resolve();
+        busy = true;
+        const group = selectLayer(axis, layer);
+        attachToPivot(group);
+        const target = dir * Math.PI / 2;
+        const start = performance.now();
+        function step(now) {
+          const t = Math.min(1, (now - start) / duration);
+          const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          pivot.rotation[axis] = target * eased;
+          if (t < 1) {
+            requestAnimationFrame(step);
+          } else {
+            pivot.rotation[axis] = target;
+            detachFromPivot();
+            busy = false;
+            resolve();
+          }
+        }
+        requestAnimationFrame(step);
+      });
+    }
+
+    // --- Move tracking & solved detection ---
+    let moveCount = 0;
+    let startTime = null;
+    let timerInterval = null;
+    const movesEl = document.getElementById('moves');
+    const timerEl = document.getElementById('timer');
+    const toastEl = document.getElementById('toast');
+
+    function startTimer() {
+      if (timerInterval) return;
+      startTime = performance.now();
+      timerInterval = setInterval(() => {
+        const s = Math.floor((performance.now() - startTime) / 1000);
+        const mm = String(Math.floor(s / 60)).padStart(2, '0');
+        const ss = String(s % 60).padStart(2, '0');
+        timerEl.textContent = `${mm}:${ss}`;
+      }, 250);
+    }
+    function stopTimer() {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+    function resetStats() {
+      moveCount = 0;
+      movesEl.textContent = '0';
+      stopTimer();
+      timerEl.textContent = '00:00';
+      startTime = null;
+    }
+
+    function isSolved() {
+      // A cubie is in solved orientation if its world rotation is identity (mod 2PI)
+      // and its position matches its initial color layout. Simpler: for each face,
+      // all 9 stickers face same world direction with same color.
+      const faces = [
+        { axis: 'x', layer:  1, mat: 0 },
+        { axis: 'x', layer: -1, mat: 1 },
+        { axis: 'y', layer:  1, mat: 2 },
+        { axis: 'y', layer: -1, mat: 3 },
+        { axis: 'z', layer:  1, mat: 4 },
+        { axis: 'z', layer: -1, mat: 5 }
+      ];
+      for (const f of faces) {
+        const cs = selectLayer(f.axis, f.layer);
+        // For each cubie on this face, find the material whose face normal points
+        // to f.axis*f.layer in world space; its color must be uniform.
+        const normalTarget = new THREE.Vector3();
+        normalTarget[f.axis] = f.layer;
+        let color = null;
+        for (const c of cs) {
+          c.updateMatrixWorld();
+          const normals = [
+            new THREE.Vector3( 1, 0, 0), new THREE.Vector3(-1, 0, 0),
+            new THREE.Vector3( 0, 1, 0), new THREE.Vector3( 0,-1, 0),
+            new THREE.Vector3( 0, 0, 1), new THREE.Vector3( 0, 0,-1)
+          ];
+          let bestIdx = 0, bestDot = -Infinity;
+          for (let i = 0; i < 6; i++) {
+            const wn = normals[i].clone().applyQuaternion(c.getWorldQuaternion(new THREE.Quaternion()));
+            const d = wn.dot(normalTarget);
+            if (d > bestDot) { bestDot = d; bestIdx = i; }
+          }
+          const col = c.material[bestIdx].color.getHex();
+          if (color === null) color = col;
+          else if (col !== color) return false;
+        }
+      }
+      return true;
+    }
+
+    function recordMove() {
+      moveCount++;
+      movesEl.textContent = String(moveCount);
+      if (!startTime) startTimer();
+      // Check solved after each move
+      if (isSolved() && moveCount > 0) {
+        stopTimer();
+        toastEl.textContent = `完成！步數 ${moveCount} · 時間 ${timerEl.textContent}`;
+        toastEl.classList.add('show');
+        setTimeout(() => toastEl.classList.remove('show'), 3500);
+      }
+    }
+
+    // --- Pointer interaction for slice rotation ---
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let dragState = null;
+
+    function setPointer(e) {
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function pickCubie(e) {
+      setPointer(e);
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(cubies, false);
+      return hits[0] || null;
+    }
+
+    // Capture-phase listener on window runs before OrbitControls' listener on canvas.
+    window.addEventListener('pointerdown', (e) => {
+      if (e.target !== canvas) return;
+      if (busy) return;
+      const hit = pickCubie(e);
+      if (!hit) return; // let OrbitControls handle background drag
+      controls.enabled = false;
+      const cubie = hit.object;
+      // Determine the world-axis-aligned face normal that was hit
+      const localNormal = hit.face.normal.clone();
+      const worldNormal = localNormal.transformDirection(cubie.matrixWorld).round();
+      dragState = {
+        startX: e.clientX,
+        startY: e.clientY,
+        cubie,
+        worldPoint: hit.point.clone(),
+        normal: worldNormal, // world-space axis-aligned
+        cubiePos: cubie.position.clone(),
+        decided: false,
+        pointerId: e.pointerId
+      };
+      canvas.setPointerCapture(e.pointerId);
+    }, true);
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragState || dragState.decided) return;
+      const dx = e.clientX - dragState.startX;
+      const dy = e.clientY - dragState.startY;
+      if (Math.hypot(dx, dy) < 12) return;
+
+      // Two in-face axes (perpendicular to normal)
+      const n = dragState.normal;
+      const axes = [];
+      ['x','y','z'].forEach(a => {
+        if (n[a] === 0) {
+          const v = new THREE.Vector3();
+          v[a] = 1;
+          axes.push({ axisName: a, vec: v });
+        }
+      });
+
+      // Project each in-face axis to screen and pick alignment with drag direction
+      function projectToScreen(worldDir, origin) {
+        const a = origin.clone().project(camera);
+        const b = origin.clone().add(worldDir).project(camera);
+        return new THREE.Vector2(b.x - a.x, -(b.y - a.y)); // y inverted to match screen px
+      }
+      const drag2D = new THREE.Vector2(dx, dy).normalize();
+      let best = null;
+      for (const ax of axes) {
+        const s = projectToScreen(ax.vec, dragState.worldPoint).normalize();
+        const dot = s.dot(drag2D);
+        if (!best || Math.abs(dot) > Math.abs(best.dot)) best = { ...ax, dot, screen: s };
+      }
+      // Drag direction along this in-face axis. Rotation axis is the OTHER in-face axis.
+      const otherAxis = axes.find(a => a.axisName !== best.axisName);
+      const rotAxisName = otherAxis.axisName;
+      const layer = Math.round(dragState.cubie.position[rotAxisName]);
+
+      // Determine direction:
+      // Rotating slice positively around rotAxis moves a point at position p
+      // toward direction = rotAxisVec × p_normal-component. We can compute by
+      // taking the cross product of rotation axis and the in-face drag axis.
+      const rotVec = otherAxis.vec; // axis-aligned unit
+      // Velocity at the touched point for +1 rotation around rotVec is rotVec × p.
+      // The in-face-tangential component (what we see as drag) is rotVec × n, where
+      // n is the touched face's outward normal.
+      const moveVec = new THREE.Vector3().crossVectors(rotVec, n);
+      const moveScreen = (() => {
+        const a = dragState.worldPoint.clone().project(camera);
+        const b = dragState.worldPoint.clone().add(moveVec).project(camera);
+        return new THREE.Vector2(b.x - a.x, -(b.y - a.y));
+      })();
+      const dir = moveScreen.dot(drag2D) > 0 ? 1 : -1;
+
+      dragState.decided = true;
+      const axisName = rotAxisName;
+      rotateSlice(axisName, layer, dir).then(() => {
+        recordMove();
+      });
+    });
+
+    function endDrag(e) {
+      if (!dragState) return;
+      try { canvas.releasePointerCapture(dragState.pointerId); } catch {}
+      dragState = null;
+      controls.enabled = true;
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    // --- Scramble & Reset ---
+    async function scramble(n = 25) {
+      if (busy) return;
+      resetStats();
+      const axes = ['x','y','z'];
+      const layers = [-1, 0, 1];
+      let lastAxis = null;
+      for (let i = 0; i < n; i++) {
+        let a;
+        do { a = axes[Math.floor(Math.random() * 3)]; } while (a === lastAxis);
+        lastAxis = a;
+        const l = layers[Math.floor(Math.random() * 3)];
+        const d = Math.random() < 0.5 ? -1 : 1;
+        await rotateSlice(a, l, d, 90);
+      }
+      moveCount = 0;
+      movesEl.textContent = '0';
+      stopTimer();
+      timerEl.textContent = '00:00';
+      startTime = null;
+    }
+
+    function reset() {
+      if (busy) return;
+      buildCube();
+      resetStats();
+    }
+
+    document.getElementById('scramble').addEventListener('click', () => scramble());
+    document.getElementById('reset').addEventListener('click', reset);
+
+    // --- Resize ---
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Render loop ---
+    function tick() {
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    tick();
+  </script>
+</body>
+</html>
