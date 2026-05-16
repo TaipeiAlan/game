@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>畫圓挑戰 · Circle Game</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #060a0e;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+canvas { display: block; }
+#overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px 24px;
+}
+#top { display: flex; justify-content: space-between; align-items: center; }
+#brand {
+  font: 700 1rem/1 'Courier New', monospace;
+  letter-spacing: 0.25em;
+  color: rgba(255,255,255,0.4);
+}
+#back {
+  pointer-events: all;
+  font: 0.8rem 'Courier New', monospace;
+  letter-spacing: 0.1em;
+  color: rgba(255,255,255,0.35);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 6px 14px;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+#back:hover { color: rgba(255,255,255,0.7); border-color: rgba(255,255,255,0.4); }
+#bottom {
+  text-align: center;
+  font: 0.72rem 'Courier New', monospace;
+  letter-spacing: 0.12em;
+  color: rgba(255,255,255,0.18);
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <div id="top">
+    <div id="brand">CIRCLE.FUN</div>
+    <button id="back" onclick="location.href='../index.html'">← 返回</button>
+  </div>
+  <div id="bottom">用手指或滑鼠連續畫圓 · 放開後自動計分</div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let state = 'idle'; // 'idle' | 'drawing' | 'scored'
+let points = [];
+let circleData = null;  // { cx, cy, meanR, score, pts }
+let scoreAnim = 0;
+let scoreAnimStart = 0;
+let bestScore = parseFloat(localStorage.getItem('circle_best') || '') || null;
+let sparks = [];
+let toastMsg = '';
+let toastUntil = 0;
+
+// ─── Input ────────────────────────────────────────────────────────────────────
+function getXY(e) {
+  if (e.touches && e.touches.length) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+  }
+  return { x: e.clientX, y: e.clientY };
+}
+
+canvas.addEventListener('mousedown', onStart);
+canvas.addEventListener('mousemove', onMove);
+window.addEventListener('mouseup', onEnd);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onStart(e); }, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); onMove(e); }, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); onEnd(e); }, { passive: false });
+
+function onStart(e) {
+  if (state === 'scored') {
+    state = 'idle';
+    points = [];
+    circleData = null;
+    sparks = [];
+    return;
+  }
+  state = 'drawing';
+  const p = getXY(e);
+  points = [p];
+}
+
+function onMove(e) {
+  if (state !== 'drawing') return;
+  const p = getXY(e);
+  const last = points[points.length - 1];
+  if (Math.hypot(p.x - last.x, p.y - last.y) > 2) points.push(p);
+}
+
+function onEnd(e) {
+  if (state !== 'drawing') return;
+  if (points.length < 20) {
+    state = 'idle';
+    points = [];
+    return;
+  }
+  const { score, cx, cy, meanR } = calcScore(points);
+  if (meanR < 20) {
+    state = 'idle';
+    points = [];
+    toastMsg = '圓太小了，請畫大一點！';
+    toastUntil = Date.now() + 1800;
+    return;
+  }
+  circleData = { cx, cy, meanR, score, pts: [...points] };
+  scoreAnim = 0;
+  scoreAnimStart = performance.now();
+  if (bestScore === null || score > bestScore) {
+    bestScore = score;
+    localStorage.setItem('circle_best', bestScore.toString());
+  }
+  if (score >= 90) spawnSparks(cx, cy, meanR);
+  state = 'scored';
+}
+
+// ─── Scoring ─────────────────────────────────────────────────────────────────
+function computeCircle(pts) {
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  cx /= pts.length; cy /= pts.length;
+  const dists = pts.map(p => Math.hypot(p.x - cx, p.y - cy));
+  const meanR = dists.reduce((s, d) => s + d, 0) / dists.length;
+  return { cx, cy, meanR, dists };
+}
+
+function calcScore(pts) {
+  const { cx, cy, meanR, dists } = computeCircle(pts);
+  if (meanR < 20) return { score: 0, cx, cy, meanR };
+
+  // Roundness: penalise deviation from mean radius
+  const variance = dists.reduce((s, d) => s + (d - meanR) ** 2, 0) / dists.length;
+  const stddev = Math.sqrt(variance);
+  let roundness = Math.max(0, 100 * (1 - 1.2 * stddev / meanR));
+
+  // Completeness: penalise large angular gap (not closing the loop)
+  const angles = pts.map(p => Math.atan2(p.y - cy, p.x - cx));
+  const sorted = [...angles].sort((a, b) => a - b);
+  let maxGap = (sorted[0] + 2 * Math.PI) - sorted[sorted.length - 1];
+  for (let i = 1; i < sorted.length; i++) {
+    maxGap = Math.max(maxGap, sorted[i] - sorted[i - 1]);
+  }
+  const gapDeg = maxGap * 180 / Math.PI;
+  const completionFactor = gapDeg <= 20 ? 1 : Math.max(0.4, 1 - (gapDeg - 20) / 180);
+
+  const score = Math.min(100, Math.round(roundness * completionFactor * 10) / 10);
+  return { score, cx, cy, meanR };
+}
+
+// ─── Sparks ───────────────────────────────────────────────────────────────────
+function spawnSparks(cx, cy, r) {
+  for (let i = 0; i < 60; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.5 + Math.random() * 3;
+    sparks.push({
+      x: cx + Math.cos(angle) * r,
+      y: cy + Math.sin(angle) * r,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.018 + Math.random() * 0.015,
+      size: 2 + Math.random() * 3,
+      hue: 80 + Math.random() * 60,
+    });
+  }
+}
+
+function updateSparks() {
+  sparks = sparks.filter(s => s.life > 0);
+  for (const s of sparks) {
+    s.x += s.vx; s.y += s.vy;
+    s.vy += 0.06;
+    s.life -= s.decay;
+  }
+}
+
+function drawSparks() {
+  for (const s of sparks) {
+    ctx.save();
+    ctx.globalAlpha = s.life;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size * s.life, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${s.hue}, 100%, 65%)`;
+    ctx.shadowColor = `hsl(${s.hue}, 100%, 65%)`;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ─── Colour helpers ────────────────────────────────────────────────────────────
+function scoreColor(s) {
+  if (s >= 90) return [74, 222, 128];   // green
+  if (s >= 75) return [250, 204, 21];   // yellow
+  if (s >= 60) return [249, 115, 22];   // orange
+  return [248, 113, 113];               // red
+}
+
+function pointColor(dist, meanR) {
+  const dev = Math.abs(dist - meanR) / meanR;
+  const hue = Math.max(0, 120 - dev * 500);
+  return `hsl(${hue},100%,55%)`;
+}
+
+// ─── Canvas drawing ───────────────────────────────────────────────────────────
+function drawPath(pts, cx, cy, meanR) {
+  if (pts.length < 2) return;
+  const dists = pts.map(p => Math.hypot(p.x - cx, p.y - cy));
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let i = 1; i < pts.length; i++) {
+    const d = (dists[i - 1] + dists[i]) / 2;
+    const col = pointColor(d, meanR);
+    ctx.beginPath();
+    ctx.strokeStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 12;
+    ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+    ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawRefCircle(cx, cy, r, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 12]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawCenterDot(cx, cy) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 8;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawScorePanel(cx, cy, meanR, score, animating) {
+  const [r, g, b] = scoreColor(score);
+  const displayed = animating ? scoreAnim : score;
+  const fs = Math.max(28, Math.min(meanR * 0.52, W * 0.11, 96));
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // "CIRCULARITY" label above
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = `${fs * 0.22}px 'Courier New', monospace`;
+  ctx.fillText('你的圓度  CIRCULARITY', cx, cy - fs * 0.78);
+
+  // Score value
+  ctx.font = `900 ${fs}px 'Courier New', monospace`;
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.shadowColor = `rgb(${r},${g},${b})`;
+  ctx.shadowBlur = 40;
+  ctx.fillText(displayed.toFixed(1) + '%', cx, cy);
+  ctx.shadowBlur = 0;
+
+  // Best score below
+  if (bestScore !== null) {
+    ctx.font = `${fs * 0.24}px 'Courier New', monospace`;
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.85)';
+    ctx.fillText(`最佳 Best · ${bestScore.toFixed(1)}%`, cx, cy + fs * 0.72);
+  }
+
+  // Tap to retry (pulse after animation done)
+  if (!animating) {
+    const pulse = 0.25 + 0.25 * Math.sin(Date.now() / 480);
+    ctx.fillStyle = `rgba(255,255,255,${pulse})`;
+    ctx.font = `${fs * 0.19}px 'Courier New', monospace`;
+    ctx.fillText('點擊任意處再試  TAP TO RETRY', cx, cy + fs * 1.15);
+  }
+
+  ctx.restore();
+}
+
+function drawIdleScreen() {
+  const t = Date.now() / 1000;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 1.6);
+  const cx = W / 2, cy = H / 2;
+  const r = Math.min(W, H) * 0.23;
+
+  // Hint dashed circle
+  ctx.save();
+  ctx.globalAlpha = 0.04 + 0.06 * pulse;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = '#7df9ff';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([10, 16]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // Animated arc hint
+  ctx.save();
+  ctx.globalAlpha = 0.12 + 0.08 * pulse;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + t * 0.8 % (Math.PI * 2));
+  ctx.strokeStyle = '#4ade80';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.restore();
+
+  const fs = Math.min(W * 0.048, 34);
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(255,255,255,${0.35 + 0.18 * pulse})`;
+  ctx.font = `${fs}px 'PingFang TC','Microsoft JhengHei','Courier New',monospace`;
+  ctx.fillText('在螢幕上畫一個完整的圓', cx, cy);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.font = `${fs * 0.58}px 'Courier New',monospace`;
+  ctx.fillText('Draw a circle · Lift to score', cx, cy + fs * 1.5);
+  ctx.restore();
+}
+
+function drawToast(now) {
+  if (!toastMsg || now > toastUntil) return;
+  const alpha = Math.min(1, (toastUntil - now) / 400);
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(249,115,22,${alpha})`;
+  ctx.font = `${Math.min(W * 0.04, 24)}px 'Courier New',monospace`;
+  ctx.fillText(toastMsg, W / 2, H / 2);
+  ctx.restore();
+}
+
+// ─── Main render loop ─────────────────────────────────────────────────────────
+function loop(now) {
+  ctx.clearRect(0, 0, W, H);
+
+  if (state === 'idle') {
+    drawIdleScreen();
+    if (toastMsg) drawToast(now);
+  } else if (state === 'drawing') {
+    if (points.length > 1) {
+      const { cx, cy, meanR } = computeCircle(points);
+      drawRefCircle(cx, cy, meanR, 0.12);
+      drawCenterDot(cx, cy);
+      drawPath(points, cx, cy, meanR);
+    }
+  } else if (state === 'scored' && circleData) {
+    const { cx, cy, meanR, score, pts } = circleData;
+
+    // Animate score count-up
+    const dur = 850;
+    const elapsed = now - scoreAnimStart;
+    const t = Math.min(1, elapsed / dur);
+    const eased = 1 - Math.pow(1 - t, 3);
+    scoreAnim = eased * score;
+
+    updateSparks();
+    drawRefCircle(cx, cy, meanR, 0.18);
+    drawCenterDot(cx, cy);
+    drawPath(pts, cx, cy, meanR);
+    drawSparks();
+    drawScorePanel(cx, cy, meanR, score, t < 1);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
