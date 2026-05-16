@@ -181,6 +181,7 @@
     鍵盤：<kbd>←</kbd>/<kbd>A</kbd> <kbd>→</kbd>/<kbd>D</kbd> 左右移動，
     <kbd>↓</kbd>/<kbd>S</kbd> 加速下落（連按兩下直接落下），
     <kbd>↑</kbd>/<kbd>W</kbd>/<kbd>X</kbd>/<kbd>Space</kbd> 旋轉，<kbd>P</kbd> 暫停。
+    暫停中按任意按鈕即可繼續。
   </p>
 
 <script>
@@ -210,6 +211,8 @@
   };
 
   let grid, current, nextPiece, score, level, lines, dropInterval, dropTimer, lastTime, paused, gameOver;
+  let flashes = [];
+  const FLASH_DURATION = 220;
 
   function makeGrid() {
     return Array.from({length: ROWS}, () => Array(COLS).fill(null));
@@ -263,26 +266,30 @@
   }
 
   function clearLines() {
-    let cleared = 0;
+    const clearedYs = [];
     for (let y = ROWS - 1; y >= 0; y--) {
-      if (grid[y].every(c => c)) {
-        grid.splice(y, 1);
-        grid.unshift(Array(COLS).fill(null));
-        cleared++;
-        y++;
-      }
+      if (grid[y].every(c => c)) clearedYs.push(y);
     }
-    if (cleared > 0) {
-      const points = [0, 100, 300, 500, 800][cleared] * level;
-      score += points;
-      lines += cleared;
-      const newLevel = Math.floor(lines / 10) + 1;
-      if (newLevel !== level) {
-        level = newLevel;
-        dropInterval = Math.max(80, 1000 - (level - 1) * 80);
-      }
-      updateUI();
+    if (clearedYs.length === 0) return;
+
+    flashes.push({ rows: clearedYs.slice(), start: performance.now() });
+
+    clearedYs.sort((a, b) => a - b);
+    for (let i = clearedYs.length - 1; i >= 0; i--) {
+      grid.splice(clearedYs[i], 1);
+      grid.unshift(Array(COLS).fill(null));
     }
+
+    const cleared = clearedYs.length;
+    const points = [0, 100, 300, 500, 800][cleared] * level;
+    score += points;
+    lines += cleared;
+    const newLevel = Math.floor(lines / 10) + 1;
+    if (newLevel !== level) {
+      level = newLevel;
+      dropInterval = Math.max(80, 1000 - (level - 1) * 80);
+    }
+    updateUI();
   }
 
   function spawn() {
@@ -294,14 +301,26 @@
     drawNext();
   }
 
+  function wakeIfPaused() {
+    if (paused && !gameOver) {
+      paused = false;
+      lastDownPress = 0;
+      draw();
+      return true;
+    }
+    return false;
+  }
+
   function move(dx) {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     if (!collides(current, dx, 0)) current.x += dx;
     draw();
   }
 
   function softDrop() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     if (!collides(current, 0, 1)) {
       current.y += 1;
       score += 1;
@@ -313,7 +332,8 @@
   }
 
   function hardDrop() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     let dist = 0;
     while (!collides(current, 0, 1)) { current.y += 1; dist++; }
     score += dist * 2;
@@ -323,7 +343,8 @@
   }
 
   function rotateCurrent() {
-    if (paused || gameOver) return;
+    if (gameOver) return;
+    if (wakeIfPaused()) return;
     const rotated = rotate(current.shape);
     const kicks = [0, -1, 1, -2, 2];
     for (const k of kicks) {
@@ -407,7 +428,27 @@
       }
     }
 
-    if (paused && !gameOver) overlay('已暫停', '按 P 或繼續');
+    if (flashes.length > 0) {
+      const now = performance.now();
+      flashes = flashes.filter(f => {
+        const elapsed = now - f.start;
+        if (elapsed >= FLASH_DURATION) return false;
+        const t = elapsed / FLASH_DURATION;
+        const alpha = 1 - t;
+        const shrink = t * CELL * 0.5;
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        for (const y of f.rows) {
+          ctx.fillRect(0, y * CELL + shrink, board.width, CELL - shrink * 2);
+        }
+        ctx.fillStyle = `rgba(125, 249, 255, ${alpha * 0.6})`;
+        for (const y of f.rows) {
+          ctx.fillRect(0, y * CELL + shrink + 2, board.width, Math.max(0, CELL - shrink * 2 - 4));
+        }
+        return true;
+      });
+    }
+
+    if (paused && !gameOver) overlay('已暫停', '按任意按鈕繼續');
     if (gameOver) overlay('遊戲結束', '點擊重新開始');
   }
 
@@ -473,6 +514,7 @@
     paused = false;
     gameOver = false;
     nextPiece = null;
+    flashes = [];
     spawn();
     updateUI();
     draw();
@@ -481,6 +523,7 @@
   function loop(time = 0) {
     const dt = time - lastTime;
     lastTime = time;
+    let needsDraw = flashes.length > 0;
     if (!paused && !gameOver) {
       dropTimer += dt;
       if (dropTimer >= dropInterval) {
@@ -490,9 +533,10 @@
         } else {
           lockPiece();
         }
-        draw();
+        needsDraw = true;
       }
     }
+    if (needsDraw) draw();
     requestAnimationFrame(loop);
   }
 
